@@ -25,11 +25,16 @@ export default function FloorPlanEditor() {
   const [heatmap, setHeatmap] = useState(null);
   const [showHeatmap, setShowHeatmap] = useState(true);
   const [showFeatures, setShowFeatures] = useState(true);
+  const [scaleMode, setScaleMode] = useState(null); // null | 'dialog'
+  const [scaleLengthInput, setScaleLengthInput] = useState('');
+  const [scaleUnit, setScaleUnit] = useState('m');
 
   const imgRef = useRef(null);
   const canvasRef = useRef(null);
   const [imgLoaded, setImgLoaded] = useState(false);
   const drawStart = useRef(null);
+  const scaleLineRef = useRef(null);   // finalized scale reference line
+  const previewLineRef = useRef(null); // live preview while dragging
 
   // Load plan + APs
   useEffect(() => {
@@ -160,6 +165,37 @@ export default function FloorPlanEditor() {
         ctx.fillText(ap.label, ap.x, ap.y + 24);
       }
     }
+
+    // Scale reference line (finalized or live preview)
+    const sl = scaleLineRef.current ?? previewLineRef.current;
+    if (sl) {
+      const midX = (sl.x1 + sl.x2) / 2;
+      const midY = (sl.y1 + sl.y2) / 2;
+      ctx.strokeStyle = '#f0b429';
+      ctx.lineWidth = 2.5;
+      ctx.setLineDash([8, 4]);
+      ctx.beginPath();
+      ctx.moveTo(sl.x1, sl.y1);
+      ctx.lineTo(sl.x2, sl.y2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      for (const [x, y] of [[sl.x1, sl.y1], [sl.x2, sl.y2]]) {
+        ctx.beginPath();
+        ctx.arc(x, y, 6, 0, Math.PI * 2);
+        ctx.fillStyle = '#f0b429';
+        ctx.fill();
+      }
+      const pxLen = Math.round(Math.hypot(sl.x2 - sl.x1, sl.y2 - sl.y1));
+      const label = `${pxLen} px`;
+      ctx.font = 'bold 13px "JetBrains Mono", monospace';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      const tw = ctx.measureText(label).width;
+      ctx.fillStyle = 'rgba(11,18,32,0.85)';
+      ctx.fillRect(midX - tw / 2 - 5, midY - 11, tw + 10, 22);
+      ctx.fillStyle = '#f0b429';
+      ctx.fillText(label, midX, midY);
+    }
   };
 
   // ─── Mouse handling ─────────────────────────────────────────────────────
@@ -173,9 +209,21 @@ export default function FloorPlanEditor() {
     };
   };
 
+  const onMouseMove = (e) => {
+    if (tool !== 'scale' || !drawStart.current) return;
+    const pt = canvasCoords(e);
+    previewLineRef.current = { x1: drawStart.current.x, y1: drawStart.current.y, x2: pt.x, y2: pt.y };
+    drawScene();
+  };
+
   const onMouseDown = (e) => {
     const pt = canvasCoords(e);
-    if (tool === 'wall' || tool === 'window') {
+    if (tool === 'scale') {
+      scaleLineRef.current = null;
+      previewLineRef.current = null;
+      drawStart.current = pt;
+      return;
+    } else if (tool === 'wall' || tool === 'window') {
       drawStart.current = pt;
     } else if (tool === 'door') {
       const newFeatures = {
@@ -196,6 +244,22 @@ export default function FloorPlanEditor() {
   };
 
   const onMouseUp = (e) => {
+    if (tool === 'scale' && drawStart.current) {
+      const pt = canvasCoords(e);
+      const pxLen = Math.hypot(pt.x - drawStart.current.x, pt.y - drawStart.current.y);
+      if (pxLen < 10) { drawStart.current = null; previewLineRef.current = null; return; }
+      scaleLineRef.current = {
+        x1: drawStart.current.x, y1: drawStart.current.y,
+        x2: pt.x, y2: pt.y,
+        pxLen,
+      };
+      previewLineRef.current = null;
+      drawStart.current = null;
+      drawScene();
+      setScaleMode('dialog');
+      setScaleLengthInput('');
+      return;
+    }
     if ((tool === 'wall' || tool === 'window') && drawStart.current) {
       const pt = canvasCoords(e);
       const dx = pt.x - drawStart.current.x;
@@ -252,6 +316,22 @@ export default function FloorPlanEditor() {
     persist({ features: { walls: [], doors: [], windows: [] } });
   };
 
+  const applyScale = () => {
+    const length = parseFloat(scaleLengthInput);
+    if (!length || length <= 0 || !scaleLineRef.current) return;
+    const meters = scaleUnit === 'ft' ? length * 0.3048 : length;
+    persist({ scale_m_per_px: meters / scaleLineRef.current.pxLen });
+    scaleLineRef.current = null;
+    setScaleMode(null);
+    setTool('select');
+  };
+
+  const cancelScale = () => {
+    scaleLineRef.current = null;
+    previewLineRef.current = null;
+    setScaleMode(null);
+  };
+
   return (
     <div>
       <div className="page-header">
@@ -272,10 +352,10 @@ export default function FloorPlanEditor() {
           <div className="card" style={{ marginBottom: '1rem' }}>
             <h3 style={{ margin: '0 0 0.75rem', fontSize: '0.85rem', textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--text-dim)' }}>Drawing Tools</h3>
             <div className="grid g-2" style={{ gap: '6px' }}>
-              {['select', 'wall', 'door', 'window', 'ap', 'erase'].map(t => (
+              {['select', 'scale', 'wall', 'door', 'window', 'ap', 'erase'].map(t => (
                 <button key={t}
                         className={tool === t ? 'tool-btn active' : 'tool-btn'}
-                        onClick={() => setTool(t)}>
+                        onClick={() => { cancelScale(); setTool(t); }}>
                   {t.toUpperCase()}
                 </button>
               ))}
@@ -342,9 +422,59 @@ export default function FloorPlanEditor() {
 
         {/* Canvas */}
         <div className="fp-stage">
+          {scaleMode === 'dialog' && scaleLineRef.current && (
+            <div style={{
+              position: 'absolute', top: '50%', left: '50%',
+              transform: 'translate(-50%, -50%)',
+              background: 'var(--bg-card)', border: '1px solid var(--border-bright)',
+              borderRadius: '8px', padding: '1.5rem', zIndex: 10,
+              minWidth: '320px', boxShadow: '0 8px 32px rgba(0,0,0,0.6)',
+            }}>
+              <h3 style={{ margin: '0 0 0.25rem', fontSize: '1rem' }}>Set Scale</h3>
+              <div style={{ color: 'var(--text-dim)', fontSize: '0.8rem', marginBottom: '1.25rem' }}>
+                Line length: <span className="mono" style={{ color: 'var(--warn)' }}>{Math.round(scaleLineRef.current.pxLen)} px</span>
+              </div>
+              <label>Real-world length of that line</label>
+              <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                <input
+                  type="number" step="0.1" min="0.1"
+                  value={scaleLengthInput}
+                  onChange={e => setScaleLengthInput(e.target.value)}
+                  placeholder="e.g. 5"
+                  autoFocus
+                  onKeyDown={e => { if (e.key === 'Enter') applyScale(); if (e.key === 'Escape') cancelScale(); }}
+                  style={{ flex: 1 }}
+                />
+                <div style={{ display: 'flex', gap: '4px', flexShrink: 0 }}>
+                  {['m', 'ft'].map(u => (
+                    <button key={u}
+                      className={scaleUnit === u ? 'tool-btn active' : 'tool-btn'}
+                      onClick={() => setScaleUnit(u)}
+                      style={{ padding: '0.4rem 0.75rem' }}>
+                      {u}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              {scaleLengthInput && parseFloat(scaleLengthInput) > 0 && (
+                <div style={{ fontSize: '0.75rem', color: 'var(--text-dim)', marginTop: '0.5rem', fontFamily: 'var(--font-mono)' }}>
+                  → {(( scaleUnit === 'ft' ? parseFloat(scaleLengthInput) * 0.3048 : parseFloat(scaleLengthInput)) / scaleLineRef.current.pxLen).toFixed(5)} m/px
+                </div>
+              )}
+              <div style={{ display: 'flex', gap: '0.5rem', marginTop: '1.25rem', justifyContent: 'flex-end' }}>
+                <button className="ghost" onClick={cancelScale}>Cancel</button>
+                <button className="primary"
+                  onClick={applyScale}
+                  disabled={!scaleLengthInput || parseFloat(scaleLengthInput) <= 0}>
+                  Apply Scale
+                </button>
+              </div>
+            </div>
+          )}
           <div className="fp-toolbar">
             <div style={{ fontFamily: 'var(--font-mono)', fontSize: '0.75rem', color: 'var(--text-dim)', flex: 1 }}>
               Active: <span style={{ color: 'var(--accent)' }}>{tool.toUpperCase()}</span>
+              {tool === 'scale' && ' · drag a line across a known distance, then enter the real-world length'}
               {tool === 'wall' && ' · click and drag to draw a wall'}
               {tool === 'door' && ' · click to drop a door'}
               {tool === 'window' && ' · click and drag to mark a window'}
@@ -361,7 +491,8 @@ export default function FloorPlanEditor() {
             <canvas ref={canvasRef}
                     onMouseDown={onMouseDown}
                     onMouseUp={onMouseUp}
-                    style={{ width: '100%' }} />
+                    onMouseMove={onMouseMove}
+                    style={{ width: '100%', pointerEvents: scaleMode === 'dialog' ? 'none' : 'auto' }} />
           </div>
         </div>
       </div>
