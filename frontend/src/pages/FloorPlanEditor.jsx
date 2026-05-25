@@ -306,6 +306,28 @@ export default function FloorPlanEditor() {
     drawScene();
   };
 
+  // ─── Hit testing ────────────────────────────────────────────────────────
+  const hitTestAt = (pt) => {
+    const aps = plan.ap_placements || [];
+    for (let i = 0; i < aps.length; i++) {
+      if (Math.hypot(pt.x - aps[i].x, pt.y - aps[i].y) < 18) return true;
+    }
+    for (const key of ['walls', 'windows']) {
+      const segs = features[key] || [];
+      for (let i = 0; i < segs.length; i++) {
+        const s = segs[i];
+        if (Math.hypot(pt.x - s.x1, pt.y - s.y1) < 12) return true;
+        if (Math.hypot(pt.x - s.x2, pt.y - s.y2) < 12) return true;
+        if (distToSegment(pt, s) < 12) return true;
+      }
+    }
+    const doors = features.doors || [];
+    for (let i = 0; i < doors.length; i++) {
+      if (Math.hypot(pt.x - doors[i].cx, pt.y - doors[i].cy) < doors[i].radius + 8) return true;
+    }
+    return false;
+  };
+
   // ─── Mouse handling ─────────────────────────────────────────────────────
   const canvasCoords = (e) => {
     const rect = canvasRef.current.getBoundingClientRect();
@@ -320,7 +342,7 @@ export default function FloorPlanEditor() {
   };
 
   const onMouseMove = (e) => {
-    // Pan
+    // Pan (middle-mouse, alt+left, or select-tool empty-space drag)
     if (isPanningRef.current) {
       const rect = canvasRef.current.getBoundingClientRect();
       const scaleX = canvasRef.current.width / rect.width;
@@ -329,8 +351,19 @@ export default function FloorPlanEditor() {
         x: isPanningRef.current.startPan.x + (e.clientX - isPanningRef.current.startX) * scaleX,
         y: isPanningRef.current.startPan.y + (e.clientY - isPanningRef.current.startY) * scaleY,
       };
+      if (canvasRef.current) canvasRef.current.style.cursor = 'grabbing';
       drawScene();
       return;
+    }
+    // Cursor hover feedback for select tool
+    if (tool === 'select' && !dragRef.current) {
+      const pt = canvasCoords(e);
+      if (canvasRef.current) {
+        canvasRef.current.style.cursor = hitTestAt(pt) ? 'pointer' : 'grab';
+      }
+    }
+    if (tool === 'select' && dragRef.current) {
+      if (canvasRef.current) canvasRef.current.style.cursor = 'move';
     }
     if (tool === 'scale' && drawStart.current) {
       const pt = canvasCoords(e);
@@ -380,6 +413,7 @@ export default function FloorPlanEditor() {
         if (Math.hypot(pt.x - aps[i].x, pt.y - aps[i].y) < 18) {
           selectedRef.current = { type: 'ap', index: i };
           dragRef.current = { type: 'ap', index: i, startX: pt.x, startY: pt.y, origItem: { ...aps[i] } };
+          if (canvasRef.current) canvasRef.current.style.cursor = 'move';
           drawScene(); return;
         }
       }
@@ -391,11 +425,13 @@ export default function FloorPlanEditor() {
           if (Math.hypot(pt.x - s.x1, pt.y - s.y1) < 12) {
             selectedRef.current = { type, index: i, subpart: 'p1' };
             dragRef.current = { type, index: i, subpart: 'p1', startX: pt.x, startY: pt.y, origItem: { ...s } };
+            if (canvasRef.current) canvasRef.current.style.cursor = 'move';
             drawScene(); return;
           }
           if (Math.hypot(pt.x - s.x2, pt.y - s.y2) < 12) {
             selectedRef.current = { type, index: i, subpart: 'p2' };
             dragRef.current = { type, index: i, subpart: 'p2', startX: pt.x, startY: pt.y, origItem: { ...s } };
+            if (canvasRef.current) canvasRef.current.style.cursor = 'move';
             drawScene(); return;
           }
         }
@@ -407,6 +443,7 @@ export default function FloorPlanEditor() {
           if (distToSegment(pt, segs[i]) < 12) {
             selectedRef.current = { type, index: i, subpart: 'body' };
             dragRef.current = { type, index: i, subpart: 'body', startX: pt.x, startY: pt.y, origItem: { ...segs[i] } };
+            if (canvasRef.current) canvasRef.current.style.cursor = 'move';
             drawScene(); return;
           }
         }
@@ -416,9 +453,13 @@ export default function FloorPlanEditor() {
         if (Math.hypot(pt.x - doors[i].cx, pt.y - doors[i].cy) < doors[i].radius + 8) {
           selectedRef.current = { type: 'door', index: i };
           dragRef.current = { type: 'door', index: i, startX: pt.x, startY: pt.y, origItem: { ...doors[i] } };
+          if (canvasRef.current) canvasRef.current.style.cursor = 'move';
           drawScene(); return;
         }
       }
+      // Nothing hit — pan the view
+      isPanningRef.current = { startX: e.clientX, startY: e.clientY, startPan: { ...panRef.current } };
+      if (canvasRef.current) canvasRef.current.style.cursor = 'grabbing';
       drawScene();
       return;
     } else if (tool === 'scale') {
@@ -450,6 +491,7 @@ export default function FloorPlanEditor() {
     // End pan
     if (isPanningRef.current) {
       isPanningRef.current = null;
+      if (tool === 'select' && canvasRef.current) canvasRef.current.style.cursor = 'grab';
       return;
     }
     if (tool === 'select' && dragRef.current) {
@@ -469,6 +511,7 @@ export default function FloorPlanEditor() {
         if (patch) persist(patch);
       }
       dragRef.current = null;
+      if (canvasRef.current) canvasRef.current.style.cursor = 'pointer';
       return;
     }
     if (tool === 'scale' && drawStart.current) {
@@ -721,7 +764,7 @@ export default function FloorPlanEditor() {
                     style={{
                       width: '100%',
                       pointerEvents: scaleMode === 'dialog' ? 'none' : 'auto',
-                      cursor: isPanningRef.current ? 'grabbing' : 'crosshair',
+                      cursor: tool === 'select' ? 'grab' : 'crosshair',
                     }} />
           </div>
         </div>
