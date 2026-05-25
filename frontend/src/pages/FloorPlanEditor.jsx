@@ -33,8 +33,11 @@ export default function FloorPlanEditor() {
   const canvasRef = useRef(null);
   const [imgLoaded, setImgLoaded] = useState(false);
   const drawStart = useRef(null);
-  const scaleLineRef = useRef(null);   // finalized scale reference line
-  const previewLineRef = useRef(null); // live preview while dragging
+  const scaleLineRef = useRef(null);    // finalized scale reference line
+  const previewLineRef = useRef(null);  // live preview while dragging
+  const selectedRef = useRef(null);     // { type, index, subpart? }
+  const dragRef = useRef(null);         // { type, index, subpart, startX, startY, origItem }
+  const liveOverrideRef = useRef(null); // { type, index, item } live position during drag
 
   // Load plan + APs
   useEffect(() => {
@@ -59,7 +62,7 @@ export default function FloorPlanEditor() {
   useEffect(() => {
     if (!plan || !imgLoaded) return;
     drawScene();
-  }, [plan, heatmap, showHeatmap, showFeatures, imgLoaded]);
+  }, [plan, heatmap, showHeatmap, showFeatures, imgLoaded, tool]);
 
   if (!plan) return <div style={{ color: 'var(--text-dim)' }}>Loading…</div>;
 
@@ -100,40 +103,76 @@ export default function FloorPlanEditor() {
 
     if (showFeatures) {
       // Walls
-      ctx.strokeStyle = '#00d4ff';
       ctx.lineWidth = 3;
       ctx.shadowColor = 'rgba(0,212,255,0.6)';
-      ctx.shadowBlur = 4;
-      for (const w of features.walls || []) {
+      for (let i = 0; i < (features.walls || []).length; i++) {
+        const lo = liveOverrideRef.current;
+        const w = (lo?.type === 'wall' && lo.index === i) ? lo.item : features.walls[i];
+        const sel = selectedRef.current;
+        const isSel = sel?.type === 'wall' && sel?.index === i;
+        ctx.strokeStyle = isSel ? '#ffffff' : '#00d4ff';
+        ctx.shadowBlur = isSel ? 0 : 4;
         ctx.beginPath();
         ctx.moveTo(w.x1, w.y1); ctx.lineTo(w.x2, w.y2);
         ctx.stroke();
+        if (isSel) {
+          for (const [x, y, sp] of [[w.x1, w.y1, 'p1'], [w.x2, w.y2, 'p2']]) {
+            ctx.fillStyle = sel.subpart === sp ? '#ffffff' : '#00d4ff';
+            ctx.fillRect(x - 6, y - 6, 12, 12);
+          }
+        }
       }
       ctx.shadowBlur = 0;
 
       // Doors (arcs)
-      ctx.strokeStyle = '#ffb020';
       ctx.lineWidth = 2.5;
-      for (const d of features.doors || []) {
+      for (let i = 0; i < (features.doors || []).length; i++) {
+        const lo = liveOverrideRef.current;
+        const d = (lo?.type === 'door' && lo.index === i) ? lo.item : features.doors[i];
+        const isSel = selectedRef.current?.type === 'door' && selectedRef.current?.index === i;
+        ctx.strokeStyle = isSel ? '#ffffff' : '#ffb020';
         ctx.beginPath();
         ctx.arc(d.cx, d.cy, d.radius, 0, Math.PI / 2);
         ctx.stroke();
+        if (isSel) {
+          ctx.strokeStyle = '#f0b429';
+          ctx.lineWidth = 1.5;
+          ctx.beginPath();
+          ctx.arc(d.cx, d.cy, d.radius + 7, 0, Math.PI / 2);
+          ctx.stroke();
+          ctx.lineWidth = 2.5;
+        }
       }
 
       // Windows (dashed)
-      ctx.strokeStyle = '#3ddc97';
       ctx.lineWidth = 3;
       ctx.setLineDash([6, 4]);
-      for (const w of features.windows || []) {
+      for (let i = 0; i < (features.windows || []).length; i++) {
+        const lo = liveOverrideRef.current;
+        const w = (lo?.type === 'window' && lo.index === i) ? lo.item : features.windows[i];
+        const sel = selectedRef.current;
+        const isSel = sel?.type === 'window' && sel?.index === i;
+        ctx.strokeStyle = isSel ? '#ffffff' : '#3ddc97';
         ctx.beginPath();
         ctx.moveTo(w.x1, w.y1); ctx.lineTo(w.x2, w.y2);
         ctx.stroke();
+        if (isSel) {
+          ctx.setLineDash([]);
+          for (const [x, y, sp] of [[w.x1, w.y1, 'p1'], [w.x2, w.y2, 'p2']]) {
+            ctx.fillStyle = sel.subpart === sp ? '#ffffff' : '#3ddc97';
+            ctx.fillRect(x - 6, y - 6, 12, 12);
+          }
+          ctx.setLineDash([6, 4]);
+        }
       }
       ctx.setLineDash([]);
     }
 
     // APs
-    for (const ap of plan.ap_placements || []) {
+    for (let i = 0; i < (plan.ap_placements || []).length; i++) {
+      const lo = liveOverrideRef.current;
+      const ap = (lo?.type === 'ap' && lo.index === i) ? lo.item : plan.ap_placements[i];
+      const isSel = selectedRef.current?.type === 'ap' && selectedRef.current?.index === i;
       const device = devices.find(d => d.id === ap.device_id);
       // Coverage ring (translucent)
       if (device?.coverage_radius_m) {
@@ -145,6 +184,14 @@ export default function FloorPlanEditor() {
         ctx.setLineDash([4, 4]);
         ctx.stroke();
         ctx.setLineDash([]);
+      }
+      // Selection ring
+      if (isSel) {
+        ctx.beginPath();
+        ctx.arc(ap.x, ap.y, 20, 0, Math.PI * 2);
+        ctx.strokeStyle = '#f0b429';
+        ctx.lineWidth = 2;
+        ctx.stroke();
       }
       // AP marker
       ctx.beginPath();
@@ -210,15 +257,93 @@ export default function FloorPlanEditor() {
   };
 
   const onMouseMove = (e) => {
-    if (tool !== 'scale' || !drawStart.current) return;
-    const pt = canvasCoords(e);
-    previewLineRef.current = { x1: drawStart.current.x, y1: drawStart.current.y, x2: pt.x, y2: pt.y };
-    drawScene();
+    if (tool === 'scale' && drawStart.current) {
+      const pt = canvasCoords(e);
+      previewLineRef.current = { x1: drawStart.current.x, y1: drawStart.current.y, x2: pt.x, y2: pt.y };
+      drawScene();
+      return;
+    }
+    if (tool === 'select' && dragRef.current) {
+      const pt = canvasCoords(e);
+      const dr = dragRef.current;
+      const dx = pt.x - dr.startX;
+      const dy = pt.y - dr.startY;
+      let newItem;
+      if (dr.type === 'ap') {
+        newItem = { ...dr.origItem, x: dr.origItem.x + dx, y: dr.origItem.y + dy };
+      } else if (dr.type === 'wall' || dr.type === 'window') {
+        if (dr.subpart === 'p1') {
+          newItem = { ...dr.origItem, x1: dr.origItem.x1 + dx, y1: dr.origItem.y1 + dy };
+        } else if (dr.subpart === 'p2') {
+          newItem = { ...dr.origItem, x2: dr.origItem.x2 + dx, y2: dr.origItem.y2 + dy };
+        } else {
+          newItem = { ...dr.origItem, x1: dr.origItem.x1 + dx, y1: dr.origItem.y1 + dy, x2: dr.origItem.x2 + dx, y2: dr.origItem.y2 + dy };
+        }
+      } else if (dr.type === 'door') {
+        newItem = { ...dr.origItem, cx: dr.origItem.cx + dx, cy: dr.origItem.cy + dy };
+      }
+      liveOverrideRef.current = { type: dr.type, index: dr.index, item: newItem };
+      drawScene();
+    }
   };
 
   const onMouseDown = (e) => {
     const pt = canvasCoords(e);
-    if (tool === 'scale') {
+    if (tool === 'select') {
+      selectedRef.current = null;
+      dragRef.current = null;
+      liveOverrideRef.current = null;
+      const aps = plan.ap_placements || [];
+      // APs
+      for (let i = 0; i < aps.length; i++) {
+        if (Math.hypot(pt.x - aps[i].x, pt.y - aps[i].y) < 18) {
+          selectedRef.current = { type: 'ap', index: i };
+          dragRef.current = { type: 'ap', index: i, startX: pt.x, startY: pt.y, origItem: { ...aps[i] } };
+          drawScene(); return;
+        }
+      }
+      // Wall/window endpoints (higher priority than body)
+      for (const key of ['walls', 'windows']) {
+        const segs = features[key] || [];
+        const type = key.slice(0, -1);
+        for (let i = 0; i < segs.length; i++) {
+          const s = segs[i];
+          if (Math.hypot(pt.x - s.x1, pt.y - s.y1) < 12) {
+            selectedRef.current = { type, index: i, subpart: 'p1' };
+            dragRef.current = { type, index: i, subpart: 'p1', startX: pt.x, startY: pt.y, origItem: { ...s } };
+            drawScene(); return;
+          }
+          if (Math.hypot(pt.x - s.x2, pt.y - s.y2) < 12) {
+            selectedRef.current = { type, index: i, subpart: 'p2' };
+            dragRef.current = { type, index: i, subpart: 'p2', startX: pt.x, startY: pt.y, origItem: { ...s } };
+            drawScene(); return;
+          }
+        }
+      }
+      // Wall/window body
+      for (const key of ['walls', 'windows']) {
+        const segs = features[key] || [];
+        const type = key.slice(0, -1);
+        for (let i = 0; i < segs.length; i++) {
+          if (distToSegment(pt, segs[i]) < 12) {
+            selectedRef.current = { type, index: i, subpart: 'body' };
+            dragRef.current = { type, index: i, subpart: 'body', startX: pt.x, startY: pt.y, origItem: { ...segs[i] } };
+            drawScene(); return;
+          }
+        }
+      }
+      // Doors
+      const doors = features.doors || [];
+      for (let i = 0; i < doors.length; i++) {
+        if (Math.hypot(pt.x - doors[i].cx, pt.y - doors[i].cy) < doors[i].radius + 8) {
+          selectedRef.current = { type: 'door', index: i };
+          dragRef.current = { type: 'door', index: i, startX: pt.x, startY: pt.y, origItem: { ...doors[i] } };
+          drawScene(); return;
+        }
+      }
+      drawScene(); // nothing hit — deselect
+      return;
+    } else if (tool === 'scale') {
       scaleLineRef.current = null;
       previewLineRef.current = null;
       drawStart.current = pt;
@@ -244,6 +369,25 @@ export default function FloorPlanEditor() {
   };
 
   const onMouseUp = (e) => {
+    if (tool === 'select' && dragRef.current) {
+      const lo = liveOverrideRef.current;
+      if (lo) {
+        let patch;
+        if (lo.type === 'ap') {
+          patch = { ap_placements: (plan.ap_placements || []).map((a, i) => i === lo.index ? lo.item : a) };
+        } else if (lo.type === 'wall') {
+          patch = { features: { ...features, walls: (features.walls || []).map((s, i) => i === lo.index ? lo.item : s) } };
+        } else if (lo.type === 'window') {
+          patch = { features: { ...features, windows: (features.windows || []).map((s, i) => i === lo.index ? lo.item : s) } };
+        } else if (lo.type === 'door') {
+          patch = { features: { ...features, doors: (features.doors || []).map((d, i) => i === lo.index ? lo.item : d) } };
+        }
+        liveOverrideRef.current = null;
+        if (patch) persist(patch);
+      }
+      dragRef.current = null;
+      return;
+    }
     if (tool === 'scale' && drawStart.current) {
       const pt = canvasCoords(e);
       const pxLen = Math.hypot(pt.x - drawStart.current.x, pt.y - drawStart.current.y);
@@ -355,7 +499,7 @@ export default function FloorPlanEditor() {
               {['select', 'scale', 'wall', 'door', 'window', 'ap', 'erase'].map(t => (
                 <button key={t}
                         className={tool === t ? 'tool-btn active' : 'tool-btn'}
-                        onClick={() => { cancelScale(); setTool(t); }}>
+                        onClick={() => { cancelScale(); selectedRef.current = null; dragRef.current = null; liveOverrideRef.current = null; setTool(t); }}>
                   {t.toUpperCase()}
                 </button>
               ))}
