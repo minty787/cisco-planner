@@ -261,6 +261,7 @@ export default function FloorPlanEditor() {
           ctx.stroke();
         }
       }
+    }
     // Column placement preview
     const cp = columnPreviewRef.current;
     if (cp && cp.r > 2) {
