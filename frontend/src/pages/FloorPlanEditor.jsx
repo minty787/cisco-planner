@@ -56,6 +56,7 @@ export default function FloorPlanEditor() {
   const scaleLineRef = useRef(null);
   const previewLineRef = useRef(null);
   const columnPreviewRef = useRef(null);
+  const doorPreviewRef = useRef(null);
   const selectedRef = useRef(null);
   const dragRef = useRef(null);
   const liveOverrideRef = useRef(null);
@@ -188,25 +189,30 @@ export default function FloorPlanEditor() {
       }
       ctx.shadowBlur = 0;
 
-      // Doors (arcs)
+      // Doors (straight lines)
       ctx.lineWidth = 2.5;
+      ctx.shadowColor = 'rgba(255,176,32,0.6)';
       for (let i = 0; i < (features.doors || []).length; i++) {
         const lo = liveOverrideRef.current;
         const d = (lo?.type === 'door' && lo.index === i) ? lo.item : features.doors[i];
-        const isSel = selectedRef.current?.type === 'door' && selectedRef.current?.index === i;
+        if (d.x1 === undefined) continue;
+        const sel = selectedRef.current;
+        const isSel = sel?.type === 'door' && sel?.index === i;
         ctx.strokeStyle = isSel ? '#ffffff' : '#ffb020';
+        ctx.shadowBlur = isSel ? 0 : 4;
         ctx.beginPath();
-        ctx.arc(d.cx, d.cy, d.radius, 0, Math.PI / 2);
+        ctx.moveTo(d.x1, d.y1);
+        ctx.lineTo(d.x2, d.y2);
         ctx.stroke();
+        ctx.shadowBlur = 0;
         if (isSel) {
-          ctx.strokeStyle = '#f0b429';
-          ctx.lineWidth = 1.5;
-          ctx.beginPath();
-          ctx.arc(d.cx, d.cy, d.radius + 7, 0, Math.PI / 2);
-          ctx.stroke();
-          ctx.lineWidth = 2.5;
+          for (const [x, y, sp] of [[d.x1, d.y1, 'p1'], [d.x2, d.y2, 'p2']]) {
+            ctx.fillStyle = sel.subpart === sp ? '#ffffff' : '#ffb020';
+            ctx.fillRect(x - 6, y - 6, 12, 12);
+          }
         }
       }
+      ctx.shadowBlur = 0;
 
       // Windows (dashed)
       ctx.lineWidth = 3;
@@ -359,6 +365,23 @@ export default function FloorPlanEditor() {
       ctx.fillText(label, midX, midY);
     }
 
+    // Door placement preview
+    if (tool === 'door' && drawStart.current && doorPreviewRef.current) {
+      const dp = doorPreviewRef.current;
+      ctx.strokeStyle = 'rgba(255,176,32,0.75)';
+      ctx.lineWidth = 2.5;
+      ctx.setLineDash([6, 4]);
+      ctx.beginPath();
+      ctx.moveTo(drawStart.current.x, drawStart.current.y);
+      ctx.lineTo(dp.x, dp.y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.beginPath();
+      ctx.arc(drawStart.current.x, drawStart.current.y, 5, 0, Math.PI * 2);
+      ctx.fillStyle = '#ffb020';
+      ctx.fill();
+    }
+
     // Reset transform
     ctx.setTransform(1, 0, 0, 1, 0, 0);
   };
@@ -405,7 +428,12 @@ export default function FloorPlanEditor() {
     }
     const doors = features.doors || [];
     for (let i = 0; i < doors.length; i++) {
-      if (Math.hypot(pt.x - doors[i].cx, pt.y - doors[i].cy) < doors[i].radius + 8) return true;
+      const d = doors[i];
+      if (d.x1 !== undefined) {
+        if (Math.hypot(pt.x - d.x1, pt.y - d.y1) < 12) return true;
+        if (Math.hypot(pt.x - d.x2, pt.y - d.y2) < 12) return true;
+        if (distToSegment(pt, d) < 12) return true;
+      }
     }
     const cols = features.columns || [];
     for (let i = 0; i < cols.length; i++) {
@@ -457,6 +485,12 @@ export default function FloorPlanEditor() {
       drawScene();
       return;
     }
+    if (tool === 'door' && drawStart.current) {
+      const pt = canvasCoords(e);
+      doorPreviewRef.current = pt;
+      drawScene();
+      return;
+    }
     if (tool === 'column' && drawStart.current) {
       const pt = canvasCoords(e);
       columnPreviewRef.current = { cx: drawStart.current.x, cy: drawStart.current.y, r: Math.hypot(pt.x - drawStart.current.x, pt.y - drawStart.current.y) };
@@ -480,7 +514,13 @@ export default function FloorPlanEditor() {
           newItem = { ...dr.origItem, x1: dr.origItem.x1 + dx, y1: dr.origItem.y1 + dy, x2: dr.origItem.x2 + dx, y2: dr.origItem.y2 + dy };
         }
       } else if (dr.type === 'door') {
-        newItem = { ...dr.origItem, cx: dr.origItem.cx + dx, cy: dr.origItem.cy + dy };
+        if (dr.subpart === 'p1') {
+          newItem = { ...dr.origItem, x1: dr.origItem.x1 + dx, y1: dr.origItem.y1 + dy };
+        } else if (dr.subpart === 'p2') {
+          newItem = { ...dr.origItem, x2: dr.origItem.x2 + dx, y2: dr.origItem.y2 + dy };
+        } else {
+          newItem = { ...dr.origItem, x1: dr.origItem.x1 + dx, y1: dr.origItem.y1 + dy, x2: dr.origItem.x2 + dx, y2: dr.origItem.y2 + dy };
+        }
       } else if (dr.type === 'column') {
         newItem = { ...dr.origItem, cx: dr.origItem.cx + dx, cy: dr.origItem.cy + dy };
       }
@@ -544,9 +584,27 @@ export default function FloorPlanEditor() {
       }
       const doors = features.doors || [];
       for (let i = 0; i < doors.length; i++) {
-        if (Math.hypot(pt.x - doors[i].cx, pt.y - doors[i].cy) < doors[i].radius + 8) {
-          selectedRef.current = { type: 'door', index: i };
-          dragRef.current = { type: 'door', index: i, startX: pt.x, startY: pt.y, origItem: { ...doors[i] } };
+        const d = doors[i];
+        if (d.x1 === undefined) continue;
+        if (Math.hypot(pt.x - d.x1, pt.y - d.y1) < 12) {
+          selectedRef.current = { type: 'door', index: i, subpart: 'p1' };
+          dragRef.current = { type: 'door', index: i, subpart: 'p1', startX: pt.x, startY: pt.y, origItem: { ...d } };
+          if (canvasRef.current) canvasRef.current.style.cursor = 'move';
+          drawScene(); return;
+        }
+        if (Math.hypot(pt.x - d.x2, pt.y - d.y2) < 12) {
+          selectedRef.current = { type: 'door', index: i, subpart: 'p2' };
+          dragRef.current = { type: 'door', index: i, subpart: 'p2', startX: pt.x, startY: pt.y, origItem: { ...d } };
+          if (canvasRef.current) canvasRef.current.style.cursor = 'move';
+          drawScene(); return;
+        }
+      }
+      for (let i = 0; i < doors.length; i++) {
+        const d = doors[i];
+        if (d.x1 === undefined) continue;
+        if (distToSegment(pt, d) < 12) {
+          selectedRef.current = { type: 'door', index: i, subpart: 'body' };
+          dragRef.current = { type: 'door', index: i, subpart: 'body', startX: pt.x, startY: pt.y, origItem: { ...d } };
           if (canvasRef.current) canvasRef.current.style.cursor = 'move';
           drawScene(); return;
         }
@@ -573,11 +631,28 @@ export default function FloorPlanEditor() {
     } else if (tool === 'wall' || tool === 'window') {
       drawStart.current = pt;
     } else if (tool === 'door') {
-      const newFeatures = {
-        ...features,
-        doors: [...(features.doors || []), { cx: pt.x, cy: pt.y, radius: 25, material: doorMaterial.id, attenuation_db: doorMaterial.db }],
-      };
-      persist({ features: newFeatures });
+      if (!drawStart.current) {
+        drawStart.current = pt;
+        doorPreviewRef.current = pt;
+        drawScene();
+      } else {
+        const dx = pt.x - drawStart.current.x;
+        const dy = pt.y - drawStart.current.y;
+        if (Math.hypot(dx, dy) >= 5) {
+          const seg = {
+            x1: Math.round(drawStart.current.x),
+            y1: Math.round(drawStart.current.y),
+            x2: Math.round(pt.x),
+            y2: Math.round(pt.y),
+            material: doorMaterial.id,
+            attenuation_db: doorMaterial.db,
+          };
+          persist({ features: { ...features, doors: [...(features.doors || []), seg] } });
+        }
+        drawStart.current = null;
+        doorPreviewRef.current = null;
+        drawScene();
+      }
     } else if (tool === 'column') {
       columnPreviewRef.current = null;
       drawStart.current = pt;
@@ -682,7 +757,10 @@ export default function FloorPlanEditor() {
       return;
     }
     const doors = features.doors || [];
-    const doorIdx = doors.findIndex(d => Math.hypot(d.cx - pt.x, d.cy - pt.y) < d.radius + 6);
+    const doorIdx = doors.findIndex(d => {
+      if (d.x1 !== undefined) return distToSegment(pt, d) < HIT;
+      return Math.hypot(d.cx - pt.x, d.cy - pt.y) < (d.radius || 25) + 6;
+    });
     if (doorIdx >= 0) {
       persist({ features: { ...features, doors: doors.filter((_, i) => i !== doorIdx) } });
       return;
@@ -747,7 +825,7 @@ export default function FloorPlanEditor() {
               {['select', 'scale', 'wall', 'door', 'window', 'column', 'ap', 'erase'].map(t => (
                 <button key={t}
                         className={tool === t ? 'tool-btn active' : 'tool-btn'}
-                        onClick={() => { cancelScale(); selectedRef.current = null; dragRef.current = null; liveOverrideRef.current = null; setTool(t); }}>
+                        onClick={() => { cancelScale(); selectedRef.current = null; dragRef.current = null; liveOverrideRef.current = null; drawStart.current = null; doorPreviewRef.current = null; setTool(t); }}>
                   {t.toUpperCase()}
                 </button>
               ))}
@@ -933,7 +1011,7 @@ export default function FloorPlanEditor() {
               Active: <span style={{ color: 'var(--accent)' }}>{tool.toUpperCase()}</span>
               {tool === 'scale' && ' · drag a line across a known distance, then enter the real-world length'}
               {tool === 'wall' && ' · click and drag to draw a wall'}
-              {tool === 'door' && ' · click to drop a door'}
+              {tool === 'door' && ' · click to start a door, click again to place it'}
               {tool === 'window' && ' · click and drag to mark a window'}
               {tool === 'ap' && ' · click to place an AP'}
               {tool === 'column' && ' · click to place a concrete column'}
