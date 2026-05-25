@@ -5,16 +5,9 @@ import { api } from '../lib/api.js';
 /**
  * FloorPlanEditor
  *
- * A canvas-based editor that overlays detected and user-drawn features on top
- * of the uploaded floor plan image. Tools:
- *   - select : pan + edit existing items
- *   - wall   : click-drag to draw a wall segment
- *   - door   : click to place a door marker
- *   - window : click-drag to mark a window (thin segment)
- *   - ap     : click to drop an access point (choose from devices first)
- *   - erase  : click an item to delete it
- *
- * The heatmap is requested from the backend whenever AP positions change.
+ * Canvas-based editor for floor plans with WiFi heatmap overlay.
+ * Zoom: scroll wheel (centered on cursor) or +/−/FIT buttons.
+ * Pan: middle-mouse drag, or alt + left-drag.
  */
 export default function FloorPlanEditor() {
   const { id: projectId, planId } = useParams();
@@ -25,7 +18,7 @@ export default function FloorPlanEditor() {
   const [heatmap, setHeatmap] = useState(null);
   const [showHeatmap, setShowHeatmap] = useState(true);
   const [showFeatures, setShowFeatures] = useState(true);
-  const [scaleMode, setScaleMode] = useState(null); // null | 'dialog'
+  const [scaleMode, setScaleMode] = useState(null);
   const [scaleLengthInput, setScaleLengthInput] = useState('');
   const [scaleUnit, setScaleUnit] = useState('m');
 
@@ -33,13 +26,18 @@ export default function FloorPlanEditor() {
   const canvasRef = useRef(null);
   const [imgLoaded, setImgLoaded] = useState(false);
   const drawStart = useRef(null);
-  const scaleLineRef = useRef(null);    // finalized scale reference line
-  const previewLineRef = useRef(null);  // live preview while dragging
-  const selectedRef = useRef(null);     // { type, index, subpart? }
-  const dragRef = useRef(null);         // { type, index, subpart, startX, startY, origItem }
-  const liveOverrideRef = useRef(null); // { type, index, item } live position during drag
+  const scaleLineRef = useRef(null);
+  const previewLineRef = useRef(null);
+  const selectedRef = useRef(null);
+  const dragRef = useRef(null);
+  const liveOverrideRef = useRef(null);
 
-  // Load plan + APs
+  // Zoom / pan state (refs to avoid re-renders)
+  const zoomRef = useRef(1);
+  const panRef = useRef({ x: 0, y: 0 });
+  const isPanningRef = useRef(null);
+  const drawSceneRef = useRef(null);
+
   useEffect(() => {
     api.getFloorplan(planId).then(setPlan);
     api.listDevices({ family: 'access_point' }).then(ds => {
@@ -48,7 +46,6 @@ export default function FloorPlanEditor() {
     });
   }, [planId]);
 
-  // Recompute heatmap when APs change
   useEffect(() => {
     if (!plan) return;
     if ((plan.ap_placements || []).length === 0) {
@@ -58,11 +55,35 @@ export default function FloorPlanEditor() {
     api.computeHeatmap(planId).then(setHeatmap).catch(() => setHeatmap(null));
   }, [JSON.stringify(plan?.ap_placements), plan?.scale_m_per_px, JSON.stringify(plan?.features), planId]);
 
-  // Re-render canvas whenever state changes
   useEffect(() => {
     if (!plan || !imgLoaded) return;
     drawScene();
   }, [plan, heatmap, showHeatmap, showFeatures, imgLoaded, tool]);
+
+  // Attach wheel zoom handler with passive:false so we can preventDefault
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || !imgLoaded) return;
+    const handleWheel = (e) => {
+      e.preventDefault();
+      const rect = canvas.getBoundingClientRect();
+      const scaleX = canvas.width / rect.width;
+      const scaleY = canvas.height / rect.height;
+      const mouseX = (e.clientX - rect.left) * scaleX;
+      const mouseY = (e.clientY - rect.top) * scaleY;
+      const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
+      const newZoom = Math.min(10, Math.max(0.1, zoomRef.current * factor));
+      const pan = panRef.current;
+      panRef.current = {
+        x: mouseX - (mouseX - pan.x) * (newZoom / zoomRef.current),
+        y: mouseY - (mouseY - pan.y) * (newZoom / zoomRef.current),
+      };
+      zoomRef.current = newZoom;
+      drawSceneRef.current?.();
+    };
+    canvas.addEventListener('wheel', handleWheel, { passive: false });
+    return () => canvas.removeEventListener('wheel', handleWheel);
+  }, [imgLoaded]);
 
   if (!plan) return <div style={{ color: 'var(--text-dim)' }}>Loading…</div>;
 
@@ -83,22 +104,37 @@ export default function FloorPlanEditor() {
     const ctx = canvas.getContext('2d');
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
+    const zoom = zoomRef.current;
+    const pan = panRef.current;
+    ctx.setTransform(zoom, 0, 0, zoom, pan.x, pan.y);
+
     // Floor plan image at native resolution
     ctx.drawImage(img, 0, 0);
 
-    // Heatmap overlay
+    // Smooth heatmap overlay via offscreen canvas scaled with bilinear interpolation
     if (showHeatmap && heatmap && heatmap.values?.length) {
-      const cellW = canvas.width / heatmap.grid_w;
-      const cellH = canvas.height / heatmap.grid_h;
-      ctx.globalAlpha = 0.55;
+      const offscreen = document.createElement('canvas');
+      offscreen.width = heatmap.grid_w;
+      offscreen.height = heatmap.grid_h;
+      const offCtx = offscreen.getContext('2d');
+      const imgData = offCtx.createImageData(heatmap.grid_w, heatmap.grid_h);
       for (let j = 0; j < heatmap.grid_h; j++) {
         for (let i = 0; i < heatmap.grid_w; i++) {
-          const rssi = heatmap.values[j][i];
-          ctx.fillStyle = rssiToColor(rssi);
-          ctx.fillRect(i * cellW, j * cellH, cellW + 1, cellH + 1);
+          const [r, g, b, a] = rssiToRGBA(heatmap.values[j][i]);
+          const idx = (j * heatmap.grid_w + i) * 4;
+          imgData.data[idx]     = r;
+          imgData.data[idx + 1] = g;
+          imgData.data[idx + 2] = b;
+          imgData.data[idx + 3] = a;
         }
       }
+      offCtx.putImageData(imgData, 0, 0);
+      ctx.globalAlpha = 0.55;
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
+      ctx.drawImage(offscreen, 0, 0, img.naturalWidth, img.naturalHeight);
       ctx.globalAlpha = 1;
+      ctx.imageSmoothingEnabled = false;
     }
 
     if (showFeatures) {
@@ -174,7 +210,6 @@ export default function FloorPlanEditor() {
       const ap = (lo?.type === 'ap' && lo.index === i) ? lo.item : plan.ap_placements[i];
       const isSel = selectedRef.current?.type === 'ap' && selectedRef.current?.index === i;
       const device = devices.find(d => d.id === ap.device_id);
-      // Coverage ring (translucent)
       if (device?.coverage_radius_m) {
         const r = device.coverage_radius_m / plan.scale_m_per_px;
         ctx.beginPath();
@@ -185,7 +220,6 @@ export default function FloorPlanEditor() {
         ctx.stroke();
         ctx.setLineDash([]);
       }
-      // Selection ring
       if (isSel) {
         ctx.beginPath();
         ctx.arc(ap.x, ap.y, 20, 0, Math.PI * 2);
@@ -193,7 +227,6 @@ export default function FloorPlanEditor() {
         ctx.lineWidth = 2;
         ctx.stroke();
       }
-      // AP marker
       ctx.beginPath();
       ctx.arc(ap.x, ap.y, 14, 0, Math.PI * 2);
       ctx.fillStyle = '#0b1220';
@@ -213,7 +246,7 @@ export default function FloorPlanEditor() {
       }
     }
 
-    // Scale reference line (finalized or live preview)
+    // Scale reference line
     const sl = scaleLineRef.current ?? previewLineRef.current;
     if (sl) {
       const midX = (sl.x1 + sl.x2) / 2;
@@ -243,6 +276,34 @@ export default function FloorPlanEditor() {
       ctx.fillStyle = '#f0b429';
       ctx.fillText(label, midX, midY);
     }
+
+    // Reset transform
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+  };
+
+  // Keep ref current so the wheel handler always calls the latest drawScene
+  drawSceneRef.current = drawScene;
+
+  // ─── Zoom controls ───────────────────────────────────────────────────────
+  const applyZoom = (factor) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const cx = canvas.width / 2;
+    const cy = canvas.height / 2;
+    const newZoom = Math.min(10, Math.max(0.1, zoomRef.current * factor));
+    const pan = panRef.current;
+    panRef.current = {
+      x: cx - (cx - pan.x) * (newZoom / zoomRef.current),
+      y: cy - (cy - pan.y) * (newZoom / zoomRef.current),
+    };
+    zoomRef.current = newZoom;
+    drawScene();
+  };
+
+  const zoomReset = () => {
+    zoomRef.current = 1;
+    panRef.current = { x: 0, y: 0 };
+    drawScene();
   };
 
   // ─── Mouse handling ─────────────────────────────────────────────────────
@@ -250,13 +311,27 @@ export default function FloorPlanEditor() {
     const rect = canvasRef.current.getBoundingClientRect();
     const scaleX = canvasRef.current.width / rect.width;
     const scaleY = canvasRef.current.height / rect.height;
+    const zoom = zoomRef.current;
+    const pan = panRef.current;
     return {
-      x: (e.clientX - rect.left) * scaleX,
-      y: (e.clientY - rect.top) * scaleY,
+      x: ((e.clientX - rect.left) * scaleX - pan.x) / zoom,
+      y: ((e.clientY - rect.top) * scaleY - pan.y) / zoom,
     };
   };
 
   const onMouseMove = (e) => {
+    // Pan
+    if (isPanningRef.current) {
+      const rect = canvasRef.current.getBoundingClientRect();
+      const scaleX = canvasRef.current.width / rect.width;
+      const scaleY = canvasRef.current.height / rect.height;
+      panRef.current = {
+        x: isPanningRef.current.startPan.x + (e.clientX - isPanningRef.current.startX) * scaleX,
+        y: isPanningRef.current.startPan.y + (e.clientY - isPanningRef.current.startY) * scaleY,
+      };
+      drawScene();
+      return;
+    }
     if (tool === 'scale' && drawStart.current) {
       const pt = canvasCoords(e);
       previewLineRef.current = { x1: drawStart.current.x, y1: drawStart.current.y, x2: pt.x, y2: pt.y };
@@ -288,13 +363,19 @@ export default function FloorPlanEditor() {
   };
 
   const onMouseDown = (e) => {
+    // Middle mouse or alt+left = pan
+    if (e.button === 1 || (e.button === 0 && e.altKey)) {
+      isPanningRef.current = { startX: e.clientX, startY: e.clientY, startPan: { ...panRef.current } };
+      e.preventDefault();
+      return;
+    }
+
     const pt = canvasCoords(e);
     if (tool === 'select') {
       selectedRef.current = null;
       dragRef.current = null;
       liveOverrideRef.current = null;
       const aps = plan.ap_placements || [];
-      // APs
       for (let i = 0; i < aps.length; i++) {
         if (Math.hypot(pt.x - aps[i].x, pt.y - aps[i].y) < 18) {
           selectedRef.current = { type: 'ap', index: i };
@@ -302,7 +383,6 @@ export default function FloorPlanEditor() {
           drawScene(); return;
         }
       }
-      // Wall/window endpoints (higher priority than body)
       for (const key of ['walls', 'windows']) {
         const segs = features[key] || [];
         const type = key.slice(0, -1);
@@ -320,7 +400,6 @@ export default function FloorPlanEditor() {
           }
         }
       }
-      // Wall/window body
       for (const key of ['walls', 'windows']) {
         const segs = features[key] || [];
         const type = key.slice(0, -1);
@@ -332,7 +411,6 @@ export default function FloorPlanEditor() {
           }
         }
       }
-      // Doors
       const doors = features.doors || [];
       for (let i = 0; i < doors.length; i++) {
         if (Math.hypot(pt.x - doors[i].cx, pt.y - doors[i].cy) < doors[i].radius + 8) {
@@ -341,7 +419,7 @@ export default function FloorPlanEditor() {
           drawScene(); return;
         }
       }
-      drawScene(); // nothing hit — deselect
+      drawScene();
       return;
     } else if (tool === 'scale') {
       scaleLineRef.current = null;
@@ -369,6 +447,11 @@ export default function FloorPlanEditor() {
   };
 
   const onMouseUp = (e) => {
+    // End pan
+    if (isPanningRef.current) {
+      isPanningRef.current = null;
+      return;
+    }
     if (tool === 'select' && dragRef.current) {
       const lo = liveOverrideRef.current;
       if (lo) {
@@ -427,29 +510,23 @@ export default function FloorPlanEditor() {
 
   const eraseAt = (pt) => {
     const HIT = 18;
-    // Try AP first
     const aps = plan.ap_placements || [];
     const apIdx = aps.findIndex(ap => Math.hypot(ap.x - pt.x, ap.y - pt.y) < HIT);
     if (apIdx >= 0) {
-      const newAps = aps.filter((_, i) => i !== apIdx);
-      persist({ ap_placements: newAps });
+      persist({ ap_placements: aps.filter((_, i) => i !== apIdx) });
       return;
     }
-    // Then door
     const doors = features.doors || [];
     const doorIdx = doors.findIndex(d => Math.hypot(d.cx - pt.x, d.cy - pt.y) < d.radius + 6);
     if (doorIdx >= 0) {
-      const newFeatures = { ...features, doors: doors.filter((_, i) => i !== doorIdx) };
-      persist({ features: newFeatures });
+      persist({ features: { ...features, doors: doors.filter((_, i) => i !== doorIdx) } });
       return;
     }
-    // Walls / windows by distance to segment
     for (const key of ['walls', 'windows']) {
       const segs = features[key] || [];
       const segIdx = segs.findIndex(s => distToSegment(pt, s) < HIT);
       if (segIdx >= 0) {
-        const newFeatures = { ...features, [key]: segs.filter((_, i) => i !== segIdx) };
-        persist({ features: newFeatures });
+        persist({ features: { ...features, [key]: segs.filter((_, i) => i !== segIdx) } });
         return;
       }
     }
@@ -602,7 +679,7 @@ export default function FloorPlanEditor() {
               </div>
               {scaleLengthInput && parseFloat(scaleLengthInput) > 0 && (
                 <div style={{ fontSize: '0.75rem', color: 'var(--text-dim)', marginTop: '0.5rem', fontFamily: 'var(--font-mono)' }}>
-                  → {(( scaleUnit === 'ft' ? parseFloat(scaleLengthInput) * 0.3048 : parseFloat(scaleLengthInput)) / scaleLineRef.current.pxLen).toFixed(5)} m/px
+                  → {((scaleUnit === 'ft' ? parseFloat(scaleLengthInput) * 0.3048 : parseFloat(scaleLengthInput)) / scaleLineRef.current.pxLen).toFixed(5)} m/px
                 </div>
               )}
               <div style={{ display: 'flex', gap: '0.5rem', marginTop: '1.25rem', justifyContent: 'flex-end' }}>
@@ -625,6 +702,11 @@ export default function FloorPlanEditor() {
               {tool === 'ap' && ' · click to place an AP'}
               {tool === 'erase' && ' · click any feature to remove it'}
             </div>
+            <div style={{ display: 'flex', gap: '4px', alignItems: 'center', flexShrink: 0 }}>
+              <button className="tool-btn" onClick={() => applyZoom(1 / 1.25)} style={{ padding: '0.2rem 0.65rem', fontSize: '1.1rem', lineHeight: 1 }}>−</button>
+              <button className="ghost" onClick={zoomReset} style={{ padding: '0.2rem 0.6rem', fontSize: '0.72rem' }}>FIT</button>
+              <button className="tool-btn" onClick={() => applyZoom(1.25)} style={{ padding: '0.2rem 0.65rem', fontSize: '1.1rem', lineHeight: 1 }}>+</button>
+            </div>
           </div>
           <div className="fp-canvas-wrap">
             <img ref={imgRef}
@@ -636,7 +718,11 @@ export default function FloorPlanEditor() {
                     onMouseDown={onMouseDown}
                     onMouseUp={onMouseUp}
                     onMouseMove={onMouseMove}
-                    style={{ width: '100%', pointerEvents: scaleMode === 'dialog' ? 'none' : 'auto' }} />
+                    style={{
+                      width: '100%',
+                      pointerEvents: scaleMode === 'dialog' ? 'none' : 'auto',
+                      cursor: isPanningRef.current ? 'grabbing' : 'crosshair',
+                    }} />
           </div>
         </div>
       </div>
@@ -644,7 +730,6 @@ export default function FloorPlanEditor() {
   );
 }
 
-// Distance from a point to a line segment
 function distToSegment(p, seg) {
   const { x1, y1, x2, y2 } = seg;
   const dx = x2 - x1, dy = y2 - y1;
@@ -653,13 +738,20 @@ function distToSegment(p, seg) {
   return Math.hypot(p.x - (x1 + t * dx), p.y - (y1 + t * dy));
 }
 
-// Map RSSI (dBm) to a colour for the heatmap
 function rssiToColor(rssi) {
-  // Clamp to typical indoor range
-  if (rssi > -50) return 'rgb(20, 220, 90)';     // excellent — green
-  if (rssi > -60) return 'rgb(120, 220, 60)';    // good
-  if (rssi > -70) return 'rgb(220, 220, 40)';    // fair — yellow
-  if (rssi > -80) return 'rgb(240, 140, 40)';    // weak — orange
-  if (rssi > -90) return 'rgb(220, 70, 70)';     // poor — red
-  return 'rgba(80, 30, 40, 0.4)';                // dead zone
+  if (rssi > -50) return 'rgb(20, 220, 90)';
+  if (rssi > -60) return 'rgb(120, 220, 60)';
+  if (rssi > -70) return 'rgb(220, 220, 40)';
+  if (rssi > -80) return 'rgb(240, 140, 40)';
+  if (rssi > -90) return 'rgb(220, 70, 70)';
+  return 'rgba(80, 30, 40, 0.4)';
+}
+
+function rssiToRGBA(rssi) {
+  if (rssi > -50) return [20, 220, 90, 255];
+  if (rssi > -60) return [120, 220, 60, 255];
+  if (rssi > -70) return [220, 220, 40, 255];
+  if (rssi > -80) return [240, 140, 40, 255];
+  if (rssi > -90) return [220, 70, 70, 255];
+  return [80, 30, 40, 100];
 }
