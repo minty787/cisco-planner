@@ -56,7 +56,7 @@ export default function FloorPlanEditor() {
       return;
     }
     api.computeHeatmap(planId).then(setHeatmap).catch(() => setHeatmap(null));
-  }, [plan?.ap_placements?.length, planId]);
+  }, [JSON.stringify(plan?.ap_placements), plan?.scale_m_per_px, JSON.stringify(plan?.features), planId]);
 
   // Re-render canvas whenever state changes
   useEffect(() => {
