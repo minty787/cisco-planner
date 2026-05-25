@@ -1,0 +1,32 @@
+services:
+  backend:
+    build: ./backend
+    container_name: mesh-backend
+    restart: unless-stopped
+    environment:
+      # Set ANTHROPIC_API_KEY to enable AI-grade PDF datasheet extraction.
+      # Leave blank to fall back to regex heuristics.
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - DATA_DIR=/app/data
+      - UPLOAD_DIR=/app/uploads
+    volumes:
+      - mesh_data:/app/data
+      - mesh_uploads:/app/uploads
+    expose:
+      - "8000"
+    # Optional: expose backend on host for direct API access / docs
+    ports:
+      - "8000:8000"
+
+  frontend:
+    build: ./frontend
+    container_name: mesh-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "4173:4173"
+
+volumes:
+  mesh_data:
+  mesh_uploads:
