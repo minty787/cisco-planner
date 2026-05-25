@@ -119,19 +119,27 @@ def compute_heatmap(
     if not aps:
         return {"grid_w": 0, "grid_h": 0, "cell_px": 0, "values": []}
 
-    # Convert arc-style doors to line segments (chord from arc end-points).
-    # Floor-plan arcs span 0→π/2 with hinge at (cx, cy).
+    # Convert doors to line segments.
+    # New format: {x1, y1, x2, y2} — use directly.
+    # Legacy arc format: {cx, cy, radius} — use chord between arc end-points.
     door_segs: List[Dict] = []
     for d in doors:
-        cx, cy, r = d["cx"], d["cy"], d.get("radius", 25)
         atten = d.get("attenuation_db") or MATERIAL_ATTENUATION_DB.get(
             d.get("material", ""), DEFAULT_DOOR_ATTENUATION_DB
         )
-        door_segs.append({
-            "x1": cx + r, "y1": cy,
-            "x2": cx,     "y2": cy + r,
-            "attenuation_db": atten,
-        })
+        if "x1" in d:
+            door_segs.append({
+                "x1": d["x1"], "y1": d["y1"],
+                "x2": d["x2"], "y2": d["y2"],
+                "attenuation_db": atten,
+            })
+        else:
+            cx, cy, r = d["cx"], d["cy"], d.get("radius", 25)
+            door_segs.append({
+                "x1": cx + r, "y1": cy,
+                "x2": cx,     "y2": cy + r,
+                "attenuation_db": atten,
+            })
 
     aspect = height_px / max(1, width_px)
     grid_w = grid_size
