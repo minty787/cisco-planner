@@ -2,6 +2,29 @@ import { useEffect, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { api } from '../lib/api.js';
 
+const WALL_MATERIALS = [
+  { id: 'concrete',        label: 'Concrete',            db: 15, color: '#888888' },
+  { id: 'drywall_standard',label: 'Drywall (Standard)',  db: 3,  color: '#d0d0d0' },
+  { id: 'drywall_heavy',   label: 'Drywall (Heavy Duty)',db: 4,  color: '#b0b0b0' },
+  { id: 'glass_standard',  label: 'Glass (Standard)',    db: 2,  color: '#88ccff' },
+  { id: 'glass_thin',      label: 'Glass (Thin)',        db: 1,  color: '#c0e8ff' },
+  { id: 'brick',           label: 'Brick',               db: 5,  color: '#b84422' },
+  { id: 'metal',           label: 'Metal',               db: 10, color: '#8899aa' },
+  { id: 'wood',            label: 'Wood',                db: 5,  color: '#c8a060' },
+];
+
+const DOOR_MATERIALS = [
+  { id: 'door_wood',  label: 'Door (Wood)',  db: 5,  color: '#c8a060' },
+  { id: 'door_metal', label: 'Door (Metal)', db: 10, color: '#8899aa' },
+  { id: 'door_glass', label: 'Door (Glass)', db: 2,  color: '#88ccff' },
+];
+
+const WINDOW_MATERIALS = [
+  { id: 'window_single', label: 'Window (Single Pane)', db: 4,  color: '#4488ff' },
+  { id: 'window_double', label: 'Window (Double Pane)', db: 7,  color: '#2266cc' },
+  { id: 'window_triple', label: 'Window (Triple Pane)', db: 10, color: '#1144aa' },
+];
+
 /**
  * FloorPlanEditor
  *
@@ -21,6 +44,11 @@ export default function FloorPlanEditor() {
   const [scaleMode, setScaleMode] = useState(null);
   const [scaleLengthInput, setScaleLengthInput] = useState('');
   const [scaleUnit, setScaleUnit] = useState('m');
+  const [wallMaterial, setWallMaterial] = useState(WALL_MATERIALS[0]);
+  const [doorMaterial, setDoorMaterial] = useState(DOOR_MATERIALS[0]);
+  const [windowMaterial, setWindowMaterial] = useState(WINDOW_MATERIALS[0]);
+  const [columnShape, setColumnShape] = useState('round');
+  const [columnSize, setColumnSize] = useState(20);
 
   const imgRef = useRef(null);
   const canvasRef = useRef(null);
@@ -87,7 +115,7 @@ export default function FloorPlanEditor() {
 
   if (!plan) return <div style={{ color: 'var(--text-dim)' }}>Loading…</div>;
 
-  const features = plan.features || { walls: [], doors: [], windows: [] };
+  const features = plan.features || { walls: [], doors: [], windows: [], columns: [] };
 
   const persist = async (patch) => {
     const updated = await api.updateFloorplan(planId, patch);
@@ -202,6 +230,37 @@ export default function FloorPlanEditor() {
         }
       }
       ctx.setLineDash([]);
+
+      // Columns (round and square concrete)
+      for (let i = 0; i < (features.columns || []).length; i++) {
+        const lo = liveOverrideRef.current;
+        const col = (lo?.type === 'column' && lo.index === i) ? lo.item : features.columns[i];
+        const isSel = selectedRef.current?.type === 'column' && selectedRef.current?.index === i;
+        const r = (col.size || 20) / 2;
+        ctx.fillStyle = 'rgba(120,120,120,0.55)';
+        ctx.strokeStyle = isSel ? '#ffffff' : '#aaaaaa';
+        ctx.lineWidth = isSel ? 2.5 : 2;
+        ctx.shadowBlur = 0;
+        ctx.beginPath();
+        if (col.shape === 'round') {
+          ctx.arc(col.cx, col.cy, r, 0, Math.PI * 2);
+        } else {
+          ctx.rect(col.cx - r, col.cy - r, col.size || 20, col.size || 20);
+        }
+        ctx.fill();
+        ctx.stroke();
+        if (isSel) {
+          ctx.strokeStyle = '#f0b429';
+          ctx.lineWidth = 1.5;
+          ctx.beginPath();
+          if (col.shape === 'round') {
+            ctx.arc(col.cx, col.cy, r + 7, 0, Math.PI * 2);
+          } else {
+            ctx.rect(col.cx - r - 7, col.cy - r - 7, (col.size || 20) + 14, (col.size || 20) + 14);
+          }
+          ctx.stroke();
+        }
+      }
     }
 
     // APs
@@ -325,6 +384,10 @@ export default function FloorPlanEditor() {
     for (let i = 0; i < doors.length; i++) {
       if (Math.hypot(pt.x - doors[i].cx, pt.y - doors[i].cy) < doors[i].radius + 8) return true;
     }
+    const cols = features.columns || [];
+    for (let i = 0; i < cols.length; i++) {
+      if (Math.hypot(pt.x - cols[i].cx, pt.y - cols[i].cy) < (cols[i].size || 20) / 2 + 8) return true;
+    }
     return false;
   };
 
@@ -388,6 +451,8 @@ export default function FloorPlanEditor() {
           newItem = { ...dr.origItem, x1: dr.origItem.x1 + dx, y1: dr.origItem.y1 + dy, x2: dr.origItem.x2 + dx, y2: dr.origItem.y2 + dy };
         }
       } else if (dr.type === 'door') {
+        newItem = { ...dr.origItem, cx: dr.origItem.cx + dx, cy: dr.origItem.cy + dy };
+      } else if (dr.type === 'column') {
         newItem = { ...dr.origItem, cx: dr.origItem.cx + dx, cy: dr.origItem.cy + dy };
       }
       liveOverrideRef.current = { type: dr.type, index: dr.index, item: newItem };
@@ -457,6 +522,15 @@ export default function FloorPlanEditor() {
           drawScene(); return;
         }
       }
+      const cols = features.columns || [];
+      for (let i = 0; i < cols.length; i++) {
+        if (Math.hypot(pt.x - cols[i].cx, pt.y - cols[i].cy) < (cols[i].size || 20) / 2 + 8) {
+          selectedRef.current = { type: 'column', index: i };
+          dragRef.current = { type: 'column', index: i, startX: pt.x, startY: pt.y, origItem: { ...cols[i] } };
+          if (canvasRef.current) canvasRef.current.style.cursor = 'move';
+          drawScene(); return;
+        }
+      }
       // Nothing hit — pan the view
       isPanningRef.current = { startX: e.clientX, startY: e.clientY, startPan: { ...panRef.current } };
       if (canvasRef.current) canvasRef.current.style.cursor = 'grabbing';
@@ -472,7 +546,13 @@ export default function FloorPlanEditor() {
     } else if (tool === 'door') {
       const newFeatures = {
         ...features,
-        doors: [...(features.doors || []), { cx: pt.x, cy: pt.y, radius: 25 }],
+        doors: [...(features.doors || []), { cx: pt.x, cy: pt.y, radius: 25, material: doorMaterial.id, attenuation_db: doorMaterial.db }],
+      };
+      persist({ features: newFeatures });
+    } else if (tool === 'column') {
+      const newFeatures = {
+        ...features,
+        columns: [...(features.columns || []), { cx: Math.round(pt.x), cy: Math.round(pt.y), size: columnSize, shape: columnShape, attenuation_db: 15 }],
       };
       persist({ features: newFeatures });
     } else if (tool === 'ap') {
@@ -506,6 +586,8 @@ export default function FloorPlanEditor() {
           patch = { features: { ...features, windows: (features.windows || []).map((s, i) => i === lo.index ? lo.item : s) } };
         } else if (lo.type === 'door') {
           patch = { features: { ...features, doors: (features.doors || []).map((d, i) => i === lo.index ? lo.item : d) } };
+        } else if (lo.type === 'column') {
+          patch = { features: { ...features, columns: (features.columns || []).map((c, i) => i === lo.index ? lo.item : c) } };
         }
         liveOverrideRef.current = null;
         if (patch) persist(patch);
@@ -535,11 +617,14 @@ export default function FloorPlanEditor() {
       const dx = pt.x - drawStart.current.x;
       const dy = pt.y - drawStart.current.y;
       if (Math.hypot(dx, dy) < 10) { drawStart.current = null; return; }
+      const mat = tool === 'wall' ? wallMaterial : windowMaterial;
       const seg = {
         x1: Math.round(drawStart.current.x),
         y1: Math.round(drawStart.current.y),
         x2: Math.round(pt.x),
         y2: Math.round(pt.y),
+        material: mat.id,
+        attenuation_db: mat.db,
       };
       const key = tool === 'wall' ? 'walls' : 'windows';
       const newFeatures = {
@@ -573,11 +658,17 @@ export default function FloorPlanEditor() {
         return;
       }
     }
+    const columns = features.columns || [];
+    const colIdx = columns.findIndex(c => Math.hypot(c.cx - pt.x, c.cy - pt.y) < (c.size || 20) / 2 + 6);
+    if (colIdx >= 0) {
+      persist({ features: { ...features, columns: columns.filter((_, i) => i !== colIdx) } });
+      return;
+    }
   };
 
   const clearDetected = async () => {
     if (!confirm('Clear all detected walls, doors, and windows?')) return;
-    persist({ features: { walls: [], doors: [], windows: [] } });
+    persist({ features: { walls: [], doors: [], windows: [], columns: [] } });
   };
 
   const applyScale = () => {
@@ -616,7 +707,7 @@ export default function FloorPlanEditor() {
           <div className="card" style={{ marginBottom: '1rem' }}>
             <h3 style={{ margin: '0 0 0.75rem', fontSize: '0.85rem', textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--text-dim)' }}>Drawing Tools</h3>
             <div className="grid g-2" style={{ gap: '6px' }}>
-              {['select', 'scale', 'wall', 'door', 'window', 'ap', 'erase'].map(t => (
+              {['select', 'scale', 'wall', 'door', 'window', 'column', 'ap', 'erase'].map(t => (
                 <button key={t}
                         className={tool === t ? 'tool-btn active' : 'tool-btn'}
                         onClick={() => { cancelScale(); selectedRef.current = null; dragRef.current = null; liveOverrideRef.current = null; setTool(t); }}>
@@ -625,6 +716,74 @@ export default function FloorPlanEditor() {
               ))}
             </div>
           </div>
+
+          {['wall', 'door', 'window', 'column'].includes(tool) && (
+            <div className="card" style={{ marginBottom: '1rem' }}>
+              <h3 style={{ margin: '0 0 0.75rem', fontSize: '0.85rem', textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--text-dim)' }}>
+                {tool === 'column' ? 'Column Options' : 'Material'}
+              </h3>
+
+              {tool === 'wall' && WALL_MATERIALS.map(m => (
+                <button key={m.id} onClick={() => setWallMaterial(m)} style={{
+                  display: 'flex', alignItems: 'center', width: '100%',
+                  background: wallMaterial.id === m.id ? 'rgba(0,212,255,0.08)' : 'transparent',
+                  border: wallMaterial.id === m.id ? '1px solid var(--border-bright)' : '1px solid transparent',
+                  borderRadius: '4px', padding: '0.3rem 0.5rem', marginBottom: '2px',
+                  cursor: 'pointer', color: 'var(--text)',
+                }}>
+                  <span style={{ flex: 1, textAlign: 'left', fontSize: '0.82rem' }}>{m.label}</span>
+                  <span style={{ fontSize: '0.75rem', color: 'var(--text-dim)', marginRight: '0.5rem' }}>{m.db} dB</span>
+                  <span style={{ width: 10, height: 10, borderRadius: '50%', background: m.color, flexShrink: 0, border: '1px solid rgba(255,255,255,0.2)' }} />
+                </button>
+              ))}
+
+              {tool === 'door' && DOOR_MATERIALS.map(m => (
+                <button key={m.id} onClick={() => setDoorMaterial(m)} style={{
+                  display: 'flex', alignItems: 'center', width: '100%',
+                  background: doorMaterial.id === m.id ? 'rgba(0,212,255,0.08)' : 'transparent',
+                  border: doorMaterial.id === m.id ? '1px solid var(--border-bright)' : '1px solid transparent',
+                  borderRadius: '4px', padding: '0.3rem 0.5rem', marginBottom: '2px',
+                  cursor: 'pointer', color: 'var(--text)',
+                }}>
+                  <span style={{ flex: 1, textAlign: 'left', fontSize: '0.82rem' }}>{m.label}</span>
+                  <span style={{ fontSize: '0.75rem', color: 'var(--text-dim)', marginRight: '0.5rem' }}>{m.db} dB</span>
+                  <span style={{ width: 10, height: 10, borderRadius: '50%', background: m.color, flexShrink: 0, border: '1px solid rgba(255,255,255,0.2)' }} />
+                </button>
+              ))}
+
+              {tool === 'window' && WINDOW_MATERIALS.map(m => (
+                <button key={m.id} onClick={() => setWindowMaterial(m)} style={{
+                  display: 'flex', alignItems: 'center', width: '100%',
+                  background: windowMaterial.id === m.id ? 'rgba(0,212,255,0.08)' : 'transparent',
+                  border: windowMaterial.id === m.id ? '1px solid var(--border-bright)' : '1px solid transparent',
+                  borderRadius: '4px', padding: '0.3rem 0.5rem', marginBottom: '2px',
+                  cursor: 'pointer', color: 'var(--text)',
+                }}>
+                  <span style={{ flex: 1, textAlign: 'left', fontSize: '0.82rem' }}>{m.label}</span>
+                  <span style={{ fontSize: '0.75rem', color: 'var(--text-dim)', marginRight: '0.5rem' }}>{m.db} dB</span>
+                  <span style={{ width: 10, height: 10, borderRadius: '50%', background: m.color, flexShrink: 0, border: '1px solid rgba(255,255,255,0.2)' }} />
+                </button>
+              ))}
+
+              {tool === 'column' && (
+                <div>
+                  <div className="grid g-2" style={{ gap: '6px', marginBottom: '0.75rem' }}>
+                    <button className={columnShape === 'round' ? 'tool-btn active' : 'tool-btn'}
+                      onClick={() => setColumnShape('round')}>ROUND</button>
+                    <button className={columnShape === 'square' ? 'tool-btn active' : 'tool-btn'}
+                      onClick={() => setColumnShape('square')}>SQUARE</button>
+                  </div>
+                  <label>Size (px)</label>
+                  <input type="number" min="10" max="120" step="2"
+                    value={columnSize}
+                    onChange={e => setColumnSize(Math.max(10, parseInt(e.target.value) || 20))} />
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-dim)', marginTop: '0.4rem' }}>
+                    Concrete · 15 dB attenuation
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
 
           <div className="card" style={{ marginBottom: '1rem' }}>
             <label>Access Point Model</label>
@@ -665,6 +824,7 @@ export default function FloorPlanEditor() {
               <div>walls   <span style={{ float: 'right', color: 'var(--accent)' }}>{(features.walls || []).length}</span></div>
               <div>doors   <span style={{ float: 'right', color: 'var(--warn)' }}>{(features.doors || []).length}</span></div>
               <div>windows <span style={{ float: 'right', color: 'var(--ok)' }}>{(features.windows || []).length}</span></div>
+              <div>columns <span style={{ float: 'right', color: '#aaaaaa' }}>{(features.columns || []).length}</span></div>
               <div>APs     <span style={{ float: 'right', color: 'var(--accent)' }}>{(plan.ap_placements || []).length}</span></div>
             </div>
             <button className="ghost" style={{ marginTop: '0.75rem', width: '100%' }} onClick={clearDetected}>
@@ -743,6 +903,7 @@ export default function FloorPlanEditor() {
               {tool === 'door' && ' · click to drop a door'}
               {tool === 'window' && ' · click and drag to mark a window'}
               {tool === 'ap' && ' · click to place an AP'}
+              {tool === 'column' && ' · click to place a concrete column'}
               {tool === 'erase' && ' · click any feature to remove it'}
             </div>
             <div style={{ display: 'flex', gap: '4px', alignItems: 'center', flexShrink: 0 }}>

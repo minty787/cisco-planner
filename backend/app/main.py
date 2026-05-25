@@ -290,6 +290,8 @@ def compute_floorplan_heatmap(plan_id: int, session: Session = Depends(get_sessi
     features = floor.features or {}
     walls = features.get("walls", [])
     windows = features.get("windows", [])
+    doors = features.get("doors", [])
+    columns = features.get("columns", [])
     aps_raw = floor.ap_placements or []
     aps = []
     for ap in aps_raw:
@@ -308,6 +310,8 @@ def compute_floorplan_heatmap(plan_id: int, session: Session = Depends(get_sessi
         aps=aps,
         walls=walls,
         windows=windows,
+        doors=doors,
+        columns=columns,
     )
 
 
