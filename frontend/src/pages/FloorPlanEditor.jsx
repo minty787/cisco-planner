@@ -48,7 +48,6 @@ export default function FloorPlanEditor() {
   const [doorMaterial, setDoorMaterial] = useState(DOOR_MATERIALS[0]);
   const [windowMaterial, setWindowMaterial] = useState(WINDOW_MATERIALS[0]);
   const [columnShape, setColumnShape] = useState('round');
-  const [columnSize, setColumnSize] = useState(20);
 
   const imgRef = useRef(null);
   const canvasRef = useRef(null);
@@ -56,6 +55,7 @@ export default function FloorPlanEditor() {
   const drawStart = useRef(null);
   const scaleLineRef = useRef(null);
   const previewLineRef = useRef(null);
+  const columnPreviewRef = useRef(null);
   const selectedRef = useRef(null);
   const dragRef = useRef(null);
   const liveOverrideRef = useRef(null);
@@ -261,6 +261,28 @@ export default function FloorPlanEditor() {
           ctx.stroke();
         }
       }
+    // Column placement preview
+    const cp = columnPreviewRef.current;
+    if (cp && cp.r > 2) {
+      ctx.strokeStyle = '#aaaaaa';
+      ctx.fillStyle = 'rgba(120,120,120,0.35)';
+      ctx.lineWidth = 2;
+      ctx.setLineDash([4, 3]);
+      ctx.beginPath();
+      if (columnShape === 'round') {
+        ctx.arc(cp.cx, cp.cy, cp.r, 0, Math.PI * 2);
+      } else {
+        ctx.rect(cp.cx - cp.r, cp.cy - cp.r, cp.r * 2, cp.r * 2);
+      }
+      ctx.fill();
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.strokeStyle = 'rgba(255,255,255,0.7)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(cp.cx - 8, cp.cy); ctx.lineTo(cp.cx + 8, cp.cy);
+      ctx.moveTo(cp.cx, cp.cy - 8); ctx.lineTo(cp.cx, cp.cy + 8);
+      ctx.stroke();
     }
 
     // APs
@@ -434,6 +456,12 @@ export default function FloorPlanEditor() {
       drawScene();
       return;
     }
+    if (tool === 'column' && drawStart.current) {
+      const pt = canvasCoords(e);
+      columnPreviewRef.current = { cx: drawStart.current.x, cy: drawStart.current.y, r: Math.hypot(pt.x - drawStart.current.x, pt.y - drawStart.current.y) };
+      drawScene();
+      return;
+    }
     if (tool === 'select' && dragRef.current) {
       const pt = canvasCoords(e);
       const dr = dragRef.current;
@@ -550,11 +578,8 @@ export default function FloorPlanEditor() {
       };
       persist({ features: newFeatures });
     } else if (tool === 'column') {
-      const newFeatures = {
-        ...features,
-        columns: [...(features.columns || []), { cx: Math.round(pt.x), cy: Math.round(pt.y), size: columnSize, shape: columnShape, attenuation_db: 15 }],
-      };
-      persist({ features: newFeatures });
+      columnPreviewRef.current = null;
+      drawStart.current = pt;
     } else if (tool === 'ap') {
       if (!selectedDeviceId) { alert('Pick an access point model first'); return; }
       const newAps = [...(plan.ap_placements || []), {
@@ -610,6 +635,17 @@ export default function FloorPlanEditor() {
       drawScene();
       setScaleMode('dialog');
       setScaleLengthInput('');
+      return;
+    }
+    if (tool === 'column' && drawStart.current) {
+      const pt = canvasCoords(e);
+      const cx = Math.round(drawStart.current.x);
+      const cy = Math.round(drawStart.current.y);
+      const r = Math.hypot(pt.x - drawStart.current.x, pt.y - drawStart.current.y);
+      columnPreviewRef.current = null;
+      drawStart.current = null;
+      if (r < 5) { drawScene(); return; }
+      persist({ features: { ...features, columns: [...(features.columns || []), { cx, cy, size: Math.round(r * 2), shape: columnShape, attenuation_db: 15 }] } });
       return;
     }
     if ((tool === 'wall' || tool === 'window') && drawStart.current) {
@@ -773,12 +809,8 @@ export default function FloorPlanEditor() {
                     <button className={columnShape === 'square' ? 'tool-btn active' : 'tool-btn'}
                       onClick={() => setColumnShape('square')}>SQUARE</button>
                   </div>
-                  <label>Size (px)</label>
-                  <input type="number" min="10" max="120" step="2"
-                    value={columnSize}
-                    onChange={e => setColumnSize(Math.max(10, parseInt(e.target.value) || 20))} />
-                  <div style={{ fontSize: '0.75rem', color: 'var(--text-dim)', marginTop: '0.4rem' }}>
-                    Concrete · 15 dB attenuation
+                  <div style={{ fontSize: '0.78rem', color: 'var(--text-dim)' }}>
+                    Click and drag to set size. Concrete · 15 dB.
                   </div>
                 </div>
               )}
