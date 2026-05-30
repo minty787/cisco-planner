@@ -57,6 +57,7 @@ export default function FloorPlanEditor() {
   const previewLineRef = useRef(null);
   const columnPreviewRef = useRef(null);
   const doorPreviewRef = useRef(null);
+  const wallPreviewRef = useRef(null);
   const selectedRef = useRef(null);
   const dragRef = useRef(null);
   const liveOverrideRef = useRef(null);
@@ -183,7 +184,9 @@ export default function FloorPlanEditor() {
         if (isSel) {
           for (const [x, y, sp] of [[w.x1, w.y1, 'p1'], [w.x2, w.y2, 'p2']]) {
             ctx.fillStyle = sel.subpart === sp ? '#ffffff' : '#00d4ff';
-            ctx.fillRect(x - 6, y - 6, 12, 12);
+            ctx.beginPath();
+            ctx.arc(x, y, 6 / zoom, 0, Math.PI * 2);
+            ctx.fill();
           }
         }
       }
@@ -208,7 +211,9 @@ export default function FloorPlanEditor() {
         if (isSel) {
           for (const [x, y, sp] of [[d.x1, d.y1, 'p1'], [d.x2, d.y2, 'p2']]) {
             ctx.fillStyle = sel.subpart === sp ? '#ffffff' : '#ffb020';
-            ctx.fillRect(x - 6, y - 6, 12, 12);
+            ctx.beginPath();
+            ctx.arc(x, y, 6 / zoom, 0, Math.PI * 2);
+            ctx.fill();
           }
         }
       }
@@ -230,7 +235,9 @@ export default function FloorPlanEditor() {
           ctx.setLineDash([]);
           for (const [x, y, sp] of [[w.x1, w.y1, 'p1'], [w.x2, w.y2, 'p2']]) {
             ctx.fillStyle = sel.subpart === sp ? '#ffffff' : '#3ddc97';
-            ctx.fillRect(x - 6, y - 6, 12, 12);
+            ctx.beginPath();
+            ctx.arc(x, y, 6 / zoom, 0, Math.PI * 2);
+            ctx.fill();
           }
           ctx.setLineDash([6, 4]);
         }
@@ -365,6 +372,31 @@ export default function FloorPlanEditor() {
       ctx.fillText(label, midX, midY);
     }
 
+    // Wall/window placement preview
+    const wp = wallPreviewRef.current;
+    if (wp) {
+      const isWin = tool === 'window';
+      ctx.strokeStyle = isWin ? 'rgba(61,220,151,0.7)' : 'rgba(0,212,255,0.7)';
+      ctx.lineWidth = 3;
+      if (isWin) ctx.setLineDash([6, 4]);
+      ctx.beginPath();
+      ctx.moveTo(wp.x1, wp.y1);
+      ctx.lineTo(wp.x2, wp.y2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = isWin ? '#3ddc97' : '#00d4ff';
+      ctx.beginPath();
+      ctx.arc(wp.x1, wp.y1, 5 / zoom, 0, Math.PI * 2);
+      ctx.fill();
+      if (wp.isSnapped) {
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 1.5 / zoom;
+        ctx.beginPath();
+        ctx.arc(wp.x2, wp.y2, 9 / zoom, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+    }
+
     // Door placement preview
     if (tool === 'door' && drawStart.current && doorPreviewRef.current) {
       const dp = doorPreviewRef.current;
@@ -488,6 +520,13 @@ export default function FloorPlanEditor() {
     if (tool === 'door' && drawStart.current) {
       const pt = canvasCoords(e);
       doorPreviewRef.current = pt;
+      drawScene();
+      return;
+    }
+    if ((tool === 'wall' || tool === 'window') && drawStart.current) {
+      const pt = canvasCoords(e);
+      const snapped = snapToEndpoint(pt, features, zoomRef.current);
+      wallPreviewRef.current = { x1: drawStart.current.x, y1: drawStart.current.y, x2: snapped.x, y2: snapped.y, isSnapped: snapped !== pt };
       drawScene();
       return;
     }
@@ -629,21 +668,22 @@ export default function FloorPlanEditor() {
       drawStart.current = pt;
       return;
     } else if (tool === 'wall' || tool === 'window') {
-      drawStart.current = pt;
+      drawStart.current = snapToEndpoint(pt, features, zoomRef.current);
     } else if (tool === 'door') {
       if (!drawStart.current) {
-        drawStart.current = pt;
-        doorPreviewRef.current = pt;
+        drawStart.current = snapToEndpoint(pt, features, zoomRef.current);
+        doorPreviewRef.current = drawStart.current;
         drawScene();
       } else {
-        const dx = pt.x - drawStart.current.x;
-        const dy = pt.y - drawStart.current.y;
+        const snappedPt = snapToEndpoint(pt, features, zoomRef.current);
+        const dx = snappedPt.x - drawStart.current.x;
+        const dy = snappedPt.y - drawStart.current.y;
         if (Math.hypot(dx, dy) >= 5) {
           const seg = {
             x1: Math.round(drawStart.current.x),
             y1: Math.round(drawStart.current.y),
-            x2: Math.round(pt.x),
-            y2: Math.round(pt.y),
+            x2: Math.round(snappedPt.x),
+            y2: Math.round(snappedPt.y),
             material: doorMaterial.id,
             attenuation_db: doorMaterial.db,
           };
@@ -725,7 +765,9 @@ export default function FloorPlanEditor() {
       return;
     }
     if ((tool === 'wall' || tool === 'window') && drawStart.current) {
-      const pt = canvasCoords(e);
+      const rawPt = canvasCoords(e);
+      const pt = snapToEndpoint(rawPt, features, zoomRef.current);
+      wallPreviewRef.current = null;
       const dx = pt.x - drawStart.current.x;
       const dy = pt.y - drawStart.current.y;
       if (Math.hypot(dx, dy) < 10) { drawStart.current = null; return; }
@@ -825,7 +867,7 @@ export default function FloorPlanEditor() {
               {['select', 'scale', 'wall', 'door', 'window', 'column', 'ap', 'erase'].map(t => (
                 <button key={t}
                         className={tool === t ? 'tool-btn active' : 'tool-btn'}
-                        onClick={() => { cancelScale(); selectedRef.current = null; dragRef.current = null; liveOverrideRef.current = null; drawStart.current = null; doorPreviewRef.current = null; setTool(t); }}>
+                        onClick={() => { cancelScale(); selectedRef.current = null; dragRef.current = null; liveOverrideRef.current = null; drawStart.current = null; doorPreviewRef.current = null; wallPreviewRef.current = null; setTool(t); }}>
                   {t.toUpperCase()}
                 </button>
               ))}
@@ -1043,6 +1085,22 @@ export default function FloorPlanEditor() {
       </div>
     </div>
   );
+}
+
+function snapToEndpoint(pt, features, zoomLevel, screenThreshold = 15) {
+  const threshold = screenThreshold / zoomLevel;
+  let best = null;
+  let bestDist = threshold;
+  for (const key of ['walls', 'windows', 'doors']) {
+    for (const seg of (features[key] || [])) {
+      if (seg.x1 === undefined) continue;
+      for (const ep of [{ x: seg.x1, y: seg.y1 }, { x: seg.x2, y: seg.y2 }]) {
+        const d = Math.hypot(pt.x - ep.x, pt.y - ep.y);
+        if (d < bestDist) { bestDist = d; best = ep; }
+      }
+    }
+  }
+  return best ?? pt;
 }
 
 function distToSegment(p, seg) {
