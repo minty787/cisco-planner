@@ -445,31 +445,34 @@ export default function FloorPlanEditor() {
 
   // ─── Hit testing ────────────────────────────────────────────────────────
   const hitTestAt = (pt) => {
+    const z = zoomRef.current;
+    const EP = 10 / z;  // endpoint hit radius in world coords (= 10 screen px)
+    const BD = 5 / z;   // body hit radius in world coords (= 5 screen px)
     const aps = plan.ap_placements || [];
     for (let i = 0; i < aps.length; i++) {
-      if (Math.hypot(pt.x - aps[i].x, pt.y - aps[i].y) < 18) return true;
+      if (Math.hypot(pt.x - aps[i].x, pt.y - aps[i].y) < 14 / z) return true;
     }
     for (const key of ['walls', 'windows']) {
       const segs = features[key] || [];
       for (let i = 0; i < segs.length; i++) {
         const s = segs[i];
-        if (Math.hypot(pt.x - s.x1, pt.y - s.y1) < 12) return true;
-        if (Math.hypot(pt.x - s.x2, pt.y - s.y2) < 12) return true;
-        if (distToSegment(pt, s) < 12) return true;
+        if (Math.hypot(pt.x - s.x1, pt.y - s.y1) < EP) return true;
+        if (Math.hypot(pt.x - s.x2, pt.y - s.y2) < EP) return true;
+        if (distToSegment(pt, s) < BD) return true;
       }
     }
     const doors = features.doors || [];
     for (let i = 0; i < doors.length; i++) {
       const d = doors[i];
       if (d.x1 !== undefined) {
-        if (Math.hypot(pt.x - d.x1, pt.y - d.y1) < 12) return true;
-        if (Math.hypot(pt.x - d.x2, pt.y - d.y2) < 12) return true;
-        if (distToSegment(pt, d) < 12) return true;
+        if (Math.hypot(pt.x - d.x1, pt.y - d.y1) < EP) return true;
+        if (Math.hypot(pt.x - d.x2, pt.y - d.y2) < EP) return true;
+        if (distToSegment(pt, d) < BD) return true;
       }
     }
     const cols = features.columns || [];
     for (let i = 0; i < cols.length; i++) {
-      if (Math.hypot(pt.x - cols[i].cx, pt.y - cols[i].cy) < (cols[i].size || 20) / 2 + 8) return true;
+      if (Math.hypot(pt.x - cols[i].cx, pt.y - cols[i].cy) < (cols[i].size || 20) / 2 + 6 / z) return true;
     }
     return false;
   };
@@ -578,12 +581,15 @@ export default function FloorPlanEditor() {
 
     const pt = canvasCoords(e);
     if (tool === 'select') {
+      const zoom = zoomRef.current;
+      const EP = 10 / zoom;  // endpoint grab radius (10 screen px)
+      const BD = 5 / zoom;   // body grab radius (5 screen px)
       selectedRef.current = null;
       dragRef.current = null;
       liveOverrideRef.current = null;
       const aps = plan.ap_placements || [];
       for (let i = 0; i < aps.length; i++) {
-        if (Math.hypot(pt.x - aps[i].x, pt.y - aps[i].y) < 18) {
+        if (Math.hypot(pt.x - aps[i].x, pt.y - aps[i].y) < 14 / zoom) {
           selectedRef.current = { type: 'ap', index: i };
           dragRef.current = { type: 'ap', index: i, startX: pt.x, startY: pt.y, origItem: { ...aps[i] } };
           if (canvasRef.current) canvasRef.current.style.cursor = 'move';
@@ -595,13 +601,13 @@ export default function FloorPlanEditor() {
         const type = key.slice(0, -1);
         for (let i = 0; i < segs.length; i++) {
           const s = segs[i];
-          if (Math.hypot(pt.x - s.x1, pt.y - s.y1) < 12) {
+          if (Math.hypot(pt.x - s.x1, pt.y - s.y1) < EP) {
             selectedRef.current = { type, index: i, subpart: 'p1' };
             dragRef.current = { type, index: i, subpart: 'p1', startX: pt.x, startY: pt.y, origItem: { ...s } };
             if (canvasRef.current) canvasRef.current.style.cursor = 'move';
             drawScene(); return;
           }
-          if (Math.hypot(pt.x - s.x2, pt.y - s.y2) < 12) {
+          if (Math.hypot(pt.x - s.x2, pt.y - s.y2) < EP) {
             selectedRef.current = { type, index: i, subpart: 'p2' };
             dragRef.current = { type, index: i, subpart: 'p2', startX: pt.x, startY: pt.y, origItem: { ...s } };
             if (canvasRef.current) canvasRef.current.style.cursor = 'move';
@@ -613,7 +619,7 @@ export default function FloorPlanEditor() {
         const segs = features[key] || [];
         const type = key.slice(0, -1);
         for (let i = 0; i < segs.length; i++) {
-          if (distToSegment(pt, segs[i]) < 12) {
+          if (distToSegment(pt, segs[i]) < BD) {
             selectedRef.current = { type, index: i, subpart: 'body' };
             dragRef.current = { type, index: i, subpart: 'body', startX: pt.x, startY: pt.y, origItem: { ...segs[i] } };
             if (canvasRef.current) canvasRef.current.style.cursor = 'move';
@@ -625,13 +631,13 @@ export default function FloorPlanEditor() {
       for (let i = 0; i < doors.length; i++) {
         const d = doors[i];
         if (d.x1 === undefined) continue;
-        if (Math.hypot(pt.x - d.x1, pt.y - d.y1) < 12) {
+        if (Math.hypot(pt.x - d.x1, pt.y - d.y1) < EP) {
           selectedRef.current = { type: 'door', index: i, subpart: 'p1' };
           dragRef.current = { type: 'door', index: i, subpart: 'p1', startX: pt.x, startY: pt.y, origItem: { ...d } };
           if (canvasRef.current) canvasRef.current.style.cursor = 'move';
           drawScene(); return;
         }
-        if (Math.hypot(pt.x - d.x2, pt.y - d.y2) < 12) {
+        if (Math.hypot(pt.x - d.x2, pt.y - d.y2) < EP) {
           selectedRef.current = { type: 'door', index: i, subpart: 'p2' };
           dragRef.current = { type: 'door', index: i, subpart: 'p2', startX: pt.x, startY: pt.y, origItem: { ...d } };
           if (canvasRef.current) canvasRef.current.style.cursor = 'move';
@@ -641,7 +647,7 @@ export default function FloorPlanEditor() {
       for (let i = 0; i < doors.length; i++) {
         const d = doors[i];
         if (d.x1 === undefined) continue;
-        if (distToSegment(pt, d) < 12) {
+        if (distToSegment(pt, d) < BD) {
           selectedRef.current = { type: 'door', index: i, subpart: 'body' };
           dragRef.current = { type: 'door', index: i, subpart: 'body', startX: pt.x, startY: pt.y, origItem: { ...d } };
           if (canvasRef.current) canvasRef.current.style.cursor = 'move';
@@ -650,7 +656,7 @@ export default function FloorPlanEditor() {
       }
       const cols = features.columns || [];
       for (let i = 0; i < cols.length; i++) {
-        if (Math.hypot(pt.x - cols[i].cx, pt.y - cols[i].cy) < (cols[i].size || 20) / 2 + 8) {
+        if (Math.hypot(pt.x - cols[i].cx, pt.y - cols[i].cy) < (cols[i].size || 20) / 2 + 6 / zoom) {
           selectedRef.current = { type: 'column', index: i };
           dragRef.current = { type: 'column', index: i, startX: pt.x, startY: pt.y, origItem: { ...cols[i] } };
           if (canvasRef.current) canvasRef.current.style.cursor = 'move';
@@ -791,9 +797,10 @@ export default function FloorPlanEditor() {
   };
 
   const eraseAt = (pt) => {
-    const HIT = 18;
+    const z = zoomRef.current;
+    const HIT = 8 / z;
     const aps = plan.ap_placements || [];
-    const apIdx = aps.findIndex(ap => Math.hypot(ap.x - pt.x, ap.y - pt.y) < HIT);
+    const apIdx = aps.findIndex(ap => Math.hypot(ap.x - pt.x, ap.y - pt.y) < 14 / z);
     if (apIdx >= 0) {
       persist({ ap_placements: aps.filter((_, i) => i !== apIdx) });
       return;
@@ -801,7 +808,7 @@ export default function FloorPlanEditor() {
     const doors = features.doors || [];
     const doorIdx = doors.findIndex(d => {
       if (d.x1 !== undefined) return distToSegment(pt, d) < HIT;
-      return Math.hypot(d.cx - pt.x, d.cy - pt.y) < (d.radius || 25) + 6;
+      return Math.hypot(d.cx - pt.x, d.cy - pt.y) < (d.radius || 25) + 6 / z;
     });
     if (doorIdx >= 0) {
       persist({ features: { ...features, doors: doors.filter((_, i) => i !== doorIdx) } });
@@ -816,7 +823,7 @@ export default function FloorPlanEditor() {
       }
     }
     const columns = features.columns || [];
-    const colIdx = columns.findIndex(c => Math.hypot(c.cx - pt.x, c.cy - pt.y) < (c.size || 20) / 2 + 6);
+    const colIdx = columns.findIndex(c => Math.hypot(c.cx - pt.x, c.cy - pt.y) < (c.size || 20) / 2 + 6 / z);
     if (colIdx >= 0) {
       persist({ features: { ...features, columns: columns.filter((_, i) => i !== colIdx) } });
       return;
